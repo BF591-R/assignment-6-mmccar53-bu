@@ -33,7 +33,8 @@ for (package in libs) {
 #'
 #' @examples counts_df <- load_n_trim("/path/to/counts/verse_counts.tsv")
 load_n_trim <- function(filename) {
-    return(NULL)
+  read.delim(filename) %>%                 
+    select(vP0_1, vP0_2, vAd_1, vAd_2)    
 }
 
 #' Perform a DESeq2 analysis of rna seq data
@@ -57,7 +58,24 @@ load_n_trim <- function(filename) {
 #'
 #' @examples run_deseq(counts_df, coldata, 10, "condition_day4_vs_day7")
 run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
-    return(NULL)
+  # Set gene names as rownames and remove gene column
+  counts_mat <- as.matrix(count_dataframe)
+  # Create SummarizedExperiment
+  se <- SummarizedExperiment(
+    assays = list(counts = counts_mat),
+    colData = coldata
+  )
+  # Convert to DESeqDataSet
+  dds <- DESeqDataSet(se, design = ~ condition)
+  # Filter low-count genes
+  keep <- rowSums(counts(dds)) >= count_filter
+  dds <- dds[keep, ]
+  # Run DESeq pipeline
+  dds <- DESeq(dds)
+  # Get results for specified comparison
+  res <- results(dds, name = condition_name)
+  # Convert to dataframe
+  return(res)
 }
 
 #### edgeR ####
@@ -77,7 +95,24 @@ run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
 #'
 #' @examples run_edger(counts_df, group)
 run_edger <- function(count_dataframe, group) {
-    return(NULL)
+  # Convert dataframe to matrix with gene names as rownames
+  counts_mat <- as.matrix(count_dataframe)
+  # Create DGEList object
+  dge <- DGEList(counts = counts_mat, group = group)
+  # Filter lowly expressed genes (recommended)
+  keep <- filterByExpr(dge)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  # Normalize
+  dge <- calcNormFactors(dge)
+  # Estimate dispersion
+  dge <- estimateDisp(dge)
+  # Run exact test (assumes 2 groups)
+  et <- exactTest(dge)
+  # Extract results table
+  res <- topTags(et, n = Inf)$table
+  # Keep only requested columns
+  res_df <- res[, c("logFC", "logCPM", "PValue")]
+  return(res_df)
 }
 
  #### limma ####
@@ -101,7 +136,25 @@ run_edger <- function(count_dataframe, group) {
 #' 
 #' @examples run_limma(counts_df, design, voom=TRUE)
 run_limma <- function(counts_dataframe, design, group) {
-    return(NULL)
+  # Convert dataframe to matrix with gene names as rownames
+  counts_mat <- as.matrix(counts_dataframe)
+  # Create DGEList
+  dge <- DGEList(counts = counts_mat)
+  # Filter low-expression genes
+  keep <- filterByExpr(dge, group = group)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  # Normalize
+  dge <- calcNormFactors(dge)
+  # Apply voom transformation
+  v <- voom(dge, design, plot = FALSE)
+  # Fit linear model
+  fit <- lmFit(v, design)
+  # Apply empirical Bayes moderation
+  fit <- eBayes(fit)
+  # Get top 1000 genes (smallest p-values)
+  res <- topTable(fit, coef = 2, number = Inf, sort.by = "P")
+  res <- as.data.frame(res)  # ensures rownames are preserved
+  return(res)
 }
 
 #### ggplot ####
@@ -133,7 +186,20 @@ run_limma <- function(counts_dataframe, design, group) {
 #' 2 deseq   9.97e-261
 #' 3 deseq   1.16e-206
 combine_pval <- function(deseq, edger, limma) {
-    return(NULL)
+  # Extract and label each set of p-values
+  deseq_df <- deseq %>%
+    select(pval = pvalue) %>%
+    mutate(package = "deseq")
+  edger_df <- edger %>%
+    select(pval = PValue) %>%
+    mutate(package = "edger")
+  limma_df <- limma %>%
+    select(pval = P.Value) %>%
+    mutate(package = "limma")
+  # Combine into one long dataframe
+  combined <- bind_rows(deseq_df, edger_df, limma_df) %>%
+    select(package, pval)
+  return(combined)
 }
 
 #' Create three separate facets for each of the diff. exp. pacakges.
@@ -157,7 +223,23 @@ combine_pval <- function(deseq, edger, limma) {
 #' 1  -9.84 2.23e-180 edgeR  
 #' 2   6.18 5.87e-179 edgeR  
 create_facets <- function(deseq, edger, limma) {
-    return(NULL)
+  # DESeq2
+  deseq_df <- deseq %>%
+    select(logFC = log2FoldChange, padj) %>%
+    mutate(package = "deseq")
+  # edgeR (compute adjusted p-values)
+  edger_df <- edger %>%
+    mutate(padj = p.adjust(PValue, method = "BH")) %>%
+    select(logFC, padj) %>%
+    mutate(package = "edger")
+  # limma
+  limma_df <- limma %>%
+    select(logFC, padj = adj.P.Val) %>%
+    mutate(package = "limma")
+  # Combine all
+  combined <- bind_rows(deseq_df, edger_df, limma_df) %>%
+    select(logFC, padj, package)
+  return(combined)
 }
 
 #' Create an attractive volcano plot of three diff. exp. packages' data.
@@ -187,6 +269,36 @@ create_facets <- function(deseq, edger, limma) {
 #'
 #' @examples p <- theme_plot(volcano)
 theme_plot <- function(volcano_data) {
-    return(NULL)
+  # Define significance threshold
+  volcano_data <- volcano_data %>%
+    mutate(
+      sig = ifelse(padj < 0.05 & abs(logFC) > 1, "Significant", "Not significant")
+    )
+  
+  # Create volcano plot
+  p <- ggplot(volcano_data, aes(x = logFC, y = -log10(padj), color = sig)) +
+    geom_point(alpha = 0.7, size = 2) +                     # semi-transparent points
+    scale_color_manual(values = c("Significant" = "#E41A1C", # red
+                                  "Not significant" = "#377EB8")) + # blue
+    facet_wrap(~ package, ncol = 1) +                        # one facet per package
+    labs(
+      x = expression(Log[2]~Fold~Change),
+      y = expression(-Log[10]~Adjusted~P-value),
+      title = "Volcano Plot of Differential Expression Results",
+      color = "Gene Significance"
+    ) +
+    theme_minimal(base_size = 14) +                          # clean background
+    theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      strip.text = element_text(face = "bold", size = 12),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      legend.position = "top",
+      legend.title = element_text(face = "bold")
+    ) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey50") + # significance line
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey50")      # logFC thresholds
+  
+  return(p)
 }
 

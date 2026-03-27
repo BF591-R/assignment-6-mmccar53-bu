@@ -49,6 +49,8 @@ coldata
 
 # a warning about factors here is normal
 deseq_res <- run_deseq(counts_df, coldata, 10, "condition_day0_vs_adult")
+deseq_res <- as.data.frame(deseq_res)
+deseq_res <- deseq_res[order(deseq_res$pvalue),][1:1000,]
 cat("deseq results:")
 head(deseq_res)
 ```
